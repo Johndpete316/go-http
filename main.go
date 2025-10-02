@@ -3,9 +3,12 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,6 +23,14 @@ import (
 
 const PORT string = ":80"
 
+type Request struct {
+	Method  string
+	Path    string
+	Version string
+	Headers map[string]string
+	Body    string
+}
+
 func main() {
 	fmt.Printf("Listening on port %s\n", PORT)
 
@@ -28,7 +39,7 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	defer l.Close()
+
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -39,41 +50,123 @@ func main() {
 
 }
 
-func handleTCPConnections(c net.Conn) {
+func parseRequest(r *bufio.Reader) (*Request, error) {
+	// parser is fragile,
+	// assumes single space between Method, Path and Version
+	// assumes all 3 are present, breaks othewise
+	// splits on space for headers, breaks if spacing in headers
+	// should lowercase all headers
+	// needs error handling to return to handler func to return error message to client
 
-	// request
-	fmt.Printf("Connection started from %s\n", c.RemoteAddr().String())
-	r := bufio.NewReader(c)
+	req := Request{
+		Headers: make(map[string]string),
+		Body:    "",
+	}
+
+	i := 0
 	for {
 		message, err := r.ReadString('\n')
 		if err != nil {
+			fmt.Println(err)
 			break
 		}
-		fmt.Print(message)
+		// fmt.Print(message)
+
 		if message == "\r\n" {
+			// read body
+			sbodyLen, ok := req.Headers["Content-Length"]
+			if !ok && req.Method != "POST" {
+				break // Content-Length header missing, break
+			} else if req.Method == "POST" {
+				fmt.Println("POST should have body, return 401")
+			}
+			bodyLen, err := strconv.ParseInt(sbodyLen, 10, 32)
+			if err != nil {
+				fmt.Println(err)
+				break
+			} else if bodyLen <= 0 {
+				break
+			}
+
+			body := make([]byte, bodyLen)
+			_, err = io.ReadFull(r, body)
+			if err != nil {
+				break
+			}
+			req.Body = string(body)
 			break
 		}
+
+		sMessage := strings.ReplaceAll(message, "\r\n", "")
+		if i == 0 {
+			s := strings.Split(sMessage, " ")
+
+			req.Method = s[0]
+			req.Path = s[1]
+			req.Version = s[2]
+		} else {
+			s := strings.Split(sMessage, " ")
+			headerKey := strings.ReplaceAll(s[0], ":", "")
+			req.Headers[headerKey] = s[1]
+		}
+
+		i++
+	}
+
+	return &req, nil
+}
+
+func handleTCPConnections(c net.Conn) {
+	defer c.Close()
+	// request
+	fmt.Printf("Connection started from %s\n", c.RemoteAddr().String())
+	r := bufio.NewReader(c)
+
+	req, err := parseRequest(r)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	var res string
+	// simple router??? I think?
+	if req.Path == "/" || req.Path == "/index.html" {
+		body, err := os.ReadFile("index.html")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		bodyCount := len(body)
+		dateHeader := time.Now().Format(http.TimeFormat)
+		res = fmt.Sprintf(
+			"HTTP/1.0 200 OK\r\n"+
+				"Date: %s\r\n"+
+				"Content-Type: text/html\r\n"+
+				"Content-Length: %d\r\n"+
+				"\r\n"+
+				"%s",
+
+			dateHeader, bodyCount, string(body))
+	} else {
+		body, err := os.ReadFile("not-found.html")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		bodyCount := len(body)
+		dateHeader := time.Now().Format(http.TimeFormat)
+		res = fmt.Sprintf(
+			"HTTP/1.0 404 Not Found\r\n"+
+				"Date: %s\r\n"+
+				"Content-Type: text/html\r\n"+
+				"Content-Length: %d\r\n"+
+				"\r\n"+
+				"%s",
+
+			dateHeader, bodyCount, string(body))
 	}
 
 	// response
 	// returns index.html
-
-	body, err := os.ReadFile("index.html")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	bodyCount := len(body)
-	dateHeader := time.Now().Format(http.TimeFormat)
-	res := fmt.Sprintf(
-		"HTTP/1.0 200 OK\r\n"+
-			"Date: %s\r\n"+
-			"Content-Type: text/html\r\n"+
-			"Content-Length: %d\r\n"+
-			"\r\n"+
-			"%s",
-
-		dateHeader, bodyCount, string(body))
 
 	c.Write([]byte(res))
 }
