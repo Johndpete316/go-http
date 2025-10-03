@@ -31,6 +31,22 @@ type Request struct {
 	Body    string
 }
 
+type Response struct {
+	Version string
+	ResCode string
+	Reason  string
+	Headers map[string]string
+	Body    string
+}
+
+var statusReasons = map[string]string{
+	"200": "OK",
+	"404": "Not Found",
+	"400": "Bad Request",
+	"401": "Unauthorized",
+	"500": "Internal Server Error",
+}
+
 func main() {
 	fmt.Printf("Listening on port %s\n", PORT)
 
@@ -116,6 +132,36 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 	return &req, nil
 }
 
+func formatResponse(r Response) (string, error) {
+
+	/* 		res = fmt.Sprintf(
+	HTTP/1.0 200 OK\r\n
+	Date: \r\n
+	Content-Type: text/html\r\n
+	Content-Length: %d\r\n
+	\r\n
+	Body
+
+	dateHeader, bodyCount, string(body)) */
+	var sb strings.Builder
+
+	// Status line
+	sb.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Version, r.ResCode, r.Reason))
+
+	// Headers
+	for k, v := range r.Headers {
+		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+	}
+
+	// Blank line to separate headers from body
+	sb.WriteString("\r\n")
+
+	// Body
+	sb.WriteString(r.Body)
+
+	return sb.String(), nil
+}
+
 func handleTCPConnections(c net.Conn) {
 	defer c.Close()
 	// request
@@ -128,6 +174,7 @@ func handleTCPConnections(c net.Conn) {
 	}
 
 	var res string
+
 	// simple router??? I think?
 	if req.Path == "/" || req.Path == "/index.html" {
 		body, err := os.ReadFile("index.html")
@@ -135,38 +182,57 @@ func handleTCPConnections(c net.Conn) {
 			fmt.Println(err)
 			return
 		}
-		bodyCount := len(body)
-		dateHeader := time.Now().Format(http.TimeFormat)
-		res = fmt.Sprintf(
-			"HTTP/1.0 200 OK\r\n"+
-				"Date: %s\r\n"+
-				"Content-Type: text/html\r\n"+
-				"Content-Length: %d\r\n"+
-				"\r\n"+
-				"%s",
 
-			dateHeader, bodyCount, string(body))
+		code := "200"
+		reason, ok := statusReasons[code]
+		if !ok {
+			reason = "Unknown"
+		}
+
+		res, err = formatResponse(Response{
+			Version: "HTTP/1.0",
+			ResCode: code,
+			Reason:  reason,
+			Headers: map[string]string{
+				"Content-Type":   "text/html",
+				"Content-Length": strconv.Itoa(len(body)),
+				"Date":           time.Now().Format(http.TimeFormat),
+			},
+			Body: string(body),
+		})
+		if err != nil {
+			fmt.Println(err)
+		}
 	} else {
 		body, err := os.ReadFile("not-found.html")
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		bodyCount := len(body)
-		dateHeader := time.Now().Format(http.TimeFormat)
-		res = fmt.Sprintf(
-			"HTTP/1.0 404 Not Found\r\n"+
-				"Date: %s\r\n"+
-				"Content-Type: text/html\r\n"+
-				"Content-Length: %d\r\n"+
-				"\r\n"+
-				"%s",
 
-			dateHeader, bodyCount, string(body))
+		code := "404"
+		reason, ok := statusReasons[code]
+		if !ok {
+			reason = "Unkown"
+		}
+
+		res, err = formatResponse(Response{
+			Version: "HTTP/1.0",
+			ResCode: code,
+			Reason:  reason,
+			Headers: map[string]string{
+				"Content-Type":   "text/html",
+				"Content-Length": strconv.Itoa(len(body)),
+				"Date":           time.Now().Format(http.TimeFormat),
+			},
+			Body: string(body),
+		})
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 
 	// response
 	// returns index.html
-
 	c.Write([]byte(res))
 }
