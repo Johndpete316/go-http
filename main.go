@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // structure of an HTTP request
@@ -67,12 +68,6 @@ func main() {
 }
 
 func parseRequest(r *bufio.Reader) (*Request, error) {
-	// parser is fragile,
-	// assumes single space between Method, Path and Version
-	// assumes all 3 are present, breaks othewise
-	// splits on space for headers, breaks if spacing in headers
-	// should lowercase all headers
-	// needs error handling to return to handler func to return error message to client
 
 	req := Request{
 		Headers: make(map[string]string),
@@ -115,48 +110,38 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 
 		sMessage := strings.ReplaceAll(message, "\r\n", "")
 		if i == 0 {
-			s := strings.Split(sMessage, " ")
 
+			s := strings.Fields(sMessage)
+			if len(s) < 3 {
+				return nil, fmt.Errorf("malformed request line: %q", sMessage)
+			}
 			req.Method = s[0]
 			req.Path = s[1]
 			req.Version = s[2]
+
 		} else {
-			s := strings.Split(sMessage, " ")
-			headerKey := strings.ReplaceAll(s[0], ":", "")
-			req.Headers[headerKey] = s[1]
+			s := strings.SplitN(strings.ToLower(sMessage), ":", 2)
+			headerKey := s[0]
+			req.Headers[headerKey] = strings.TrimLeftFunc(s[1], unicode.IsSpace)
 		}
 
 		i++
 	}
+
+	fmt.Printf("%s\n", req.Headers["test"])
 
 	return &req, nil
 }
 
 func formatResponse(r Response) (string, error) {
 
-	/* 		res = fmt.Sprintf(
-	HTTP/1.0 200 OK\r\n
-	Date: \r\n
-	Content-Type: text/html\r\n
-	Content-Length: %d\r\n
-	\r\n
-	Body
-
-	dateHeader, bodyCount, string(body)) */
 	var sb strings.Builder
 
-	// Status line
 	sb.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Version, r.ResCode, r.Reason))
-
-	// Headers
 	for k, v := range r.Headers {
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
-
-	// Blank line to separate headers from body
 	sb.WriteString("\r\n")
-
-	// Body
 	sb.WriteString(r.Body)
 
 	return sb.String(), nil
