@@ -23,6 +23,7 @@ import (
 // more info @ https://www.jmarshall.com/easy/http/
 
 const PORT string = ":80"
+const VERSION string = "HTTP/1.0"
 
 type Request struct {
 	Method  string
@@ -47,6 +48,8 @@ var statusReasons = map[string]string{
 	"401": "Unauthorized",
 	"500": "Internal Server Error",
 }
+
+type requestHandler func(Request) Response
 
 func main() {
 	fmt.Printf("Listening on port %s\n", PORT)
@@ -147,6 +150,34 @@ func formatResponse(r Response) (string, error) {
 	return sb.String(), nil
 }
 
+func serveFile(filename string, statusCode string) (Response, error) {
+	body, err := os.ReadFile(filename)
+	if err != nil {
+		statusCode = "500"
+		body = []byte{}
+	}
+
+	reason, ok := statusReasons[statusCode]
+	if !ok {
+		reason = "UNKNOWN"
+	}
+
+	resp := Response{
+		Version: VERSION,
+		ResCode: statusCode,
+		Reason:  reason,
+		Headers: map[string]string{
+			"Content-Type":   "text/html",
+			"Content-Length": strconv.Itoa(len(body)),
+			"Date":           time.Now().Format(http.TimeFormat),
+		},
+		Body: string(body),
+	}
+
+	return resp, err
+
+}
+
 func handleTCPConnections(c net.Conn) {
 	defer c.Close()
 	// request
@@ -158,66 +189,30 @@ func handleTCPConnections(c net.Conn) {
 		fmt.Println(err)
 	}
 
-	var res string
-
-	// simple router??? I think?
-	if req.Path == "/" || req.Path == "/index.html" {
-		body, err := os.ReadFile("index.html")
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		code := "200"
-		reason, ok := statusReasons[code]
-		if !ok {
-			reason = "Unknown"
-		}
-
-		res, err = formatResponse(Response{
-			Version: "HTTP/1.0",
-			ResCode: code,
-			Reason:  reason,
-			Headers: map[string]string{
-				"Content-Type":   "text/html",
-				"Content-Length": strconv.Itoa(len(body)),
-				"Date":           time.Now().Format(http.TimeFormat),
-			},
-			Body: string(body),
-		})
-		if err != nil {
-			fmt.Println(err)
-		}
-	} else {
-		body, err := os.ReadFile("not-found.html")
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		code := "404"
-		reason, ok := statusReasons[code]
-		if !ok {
-			reason = "Unkown"
-		}
-
-		res, err = formatResponse(Response{
-			Version: "HTTP/1.0",
-			ResCode: code,
-			Reason:  reason,
-			Headers: map[string]string{
-				"Content-Type":   "text/html",
-				"Content-Length": strconv.Itoa(len(body)),
-				"Date":           time.Now().Format(http.TimeFormat),
-			},
-			Body: string(body),
-		})
-		if err != nil {
-			fmt.Println(err)
-		}
+	var routes = map[string]requestHandler{
+		"/": func(req Request) Response {
+			resp, _ := serveFile("index.html", "200")
+			return resp
+		},
+		"/abcd": func(req Request) Response {
+			resp, _ := serveFile("abcd.html", "200")
+			return resp
+		},
 	}
 
-	// response
-	// returns index.html
-	c.Write([]byte(res))
+	if handler, exists := routes[req.Path]; exists {
+		resp := handler(*req)
+		res, _ := formatResponse(resp)
+
+		// fmt.Printf("Request: %+v\n", req)
+		// fmt.Printf("Response: %+v\n", res)
+
+		c.Write([]byte(res))
+	} else {
+		resp, _ := serveFile("not-found.html", "404")
+		res, _ := formatResponse(resp)
+
+		c.Write([]byte(res))
+	}
+
 }
