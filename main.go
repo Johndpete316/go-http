@@ -47,6 +47,7 @@ var statusReasons = map[string]string{
 	"400": "Bad Request",
 	"401": "Unauthorized",
 	"500": "Internal Server Error",
+	"418": "I'm a teapot",
 }
 
 type requestHandler func(Request) Response
@@ -81,10 +82,8 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 	for {
 		message, err := r.ReadString('\n')
 		if err != nil {
-			fmt.Println(err)
-			break
+			return nil, fmt.Errorf("failed to read the request line: %w", err)
 		}
-		// fmt.Print(message)
 
 		if message == "\r\n" {
 			// read body
@@ -92,12 +91,11 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 			if !ok && req.Method != "POST" {
 				break // Content-Length header missing, break
 			} else if req.Method == "POST" {
-				fmt.Println("POST should have body, return 401")
+				return nil, fmt.Errorf("POST missing Content-Length")
 			}
 			bodyLen, err := strconv.ParseInt(sbodyLen, 10, 32)
 			if err != nil {
-				fmt.Println(err)
-				break
+				return nil, fmt.Errorf("failed to parse body length: %w", err)
 			} else if bodyLen <= 0 {
 				break
 			}
@@ -105,7 +103,7 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 			body := make([]byte, bodyLen)
 			_, err = io.ReadFull(r, body)
 			if err != nil {
-				break
+				return nil, fmt.Errorf("failed to read the body: %w", err)
 			}
 			req.Body = string(body)
 			break
@@ -115,23 +113,27 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 		if i == 0 {
 
 			s := strings.Fields(sMessage)
-			if len(s) < 3 {
-				return nil, fmt.Errorf("malformed request line: %q", sMessage)
-			}
+
 			req.Method = s[0]
 			req.Path = s[1]
 			req.Version = s[2]
 
+			if len(s) < 3 {
+				return nil, fmt.Errorf("malformed request line")
+			}
 		} else {
 			s := strings.SplitN(strings.ToLower(sMessage), ":", 2)
-			headerKey := s[0]
-			req.Headers[headerKey] = strings.TrimLeftFunc(s[1], unicode.IsSpace)
+			if len(s) == 2 {
+				headerKey := s[0]
+				req.Headers[headerKey] = strings.TrimLeftFunc(s[1], unicode.IsSpace)
+
+			} else {
+				return nil, fmt.Errorf("malformed headers")
+			}
 		}
 
 		i++
 	}
-
-	fmt.Printf("%s\n", req.Headers["test"])
 
 	return &req, nil
 }
@@ -145,7 +147,10 @@ func formatResponse(r Response) (string, error) {
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
 	sb.WriteString("\r\n")
-	sb.WriteString(r.Body)
+	_, err := sb.WriteString(r.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to write body: %w", err)
+	}
 
 	return sb.String(), nil
 }
@@ -153,8 +158,7 @@ func formatResponse(r Response) (string, error) {
 func serveFile(filename string, statusCode string) (Response, error) {
 	body, err := os.ReadFile(filename)
 	if err != nil {
-		statusCode = "500"
-		body = []byte{}
+		return Response{}, fmt.Errorf("failed to read file %w", err)
 	}
 
 	reason, ok := statusReasons[statusCode]
@@ -174,7 +178,7 @@ func serveFile(filename string, statusCode string) (Response, error) {
 		Body: string(body),
 	}
 
-	return resp, err
+	return resp, nil
 
 }
 
@@ -186,7 +190,20 @@ func handleTCPConnections(c net.Conn) {
 
 	req, err := parseRequest(r)
 	if err != nil {
-		fmt.Println(err)
+		resp := Response{
+			Version: VERSION,
+			ResCode: "400",
+			Reason:  "Bad Request",
+			Headers: map[string]string{
+				"Date":           time.Now().Format(http.TimeFormat),
+				"Content-Length": strconv.Itoa(len(err.Error())),
+			},
+			Body: err.Error(),
+		}
+
+		formattedResp, _ := formatResponse(resp)
+		c.Write([]byte(formattedResp))
+		return
 	}
 
 	var routes = map[string]requestHandler{
@@ -198,21 +215,24 @@ func handleTCPConnections(c net.Conn) {
 			resp, _ := serveFile("abcd.html", "200")
 			return resp
 		},
+		"/418": func(req Request) Response {
+			resp, _ := serveFile("teapot.html", "418")
+			return resp
+		},
 	}
 
 	if handler, exists := routes[req.Path]; exists {
 		resp := handler(*req)
 		res, _ := formatResponse(resp)
 
-		// fmt.Printf("Request: %+v\n", req)
-		// fmt.Printf("Response: %+v\n", res)
-
 		c.Write([]byte(res))
+		return
 	} else {
 		resp, _ := serveFile("not-found.html", "404")
 		res, _ := formatResponse(resp)
 
 		c.Write([]byte(res))
+		return
 	}
 
 }
