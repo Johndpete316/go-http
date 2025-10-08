@@ -114,13 +114,14 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 
 			s := strings.Fields(sMessage)
 
+			if len(s) < 3 {
+				return nil, fmt.Errorf("malformed request line")
+			}
+
 			req.Method = s[0]
 			req.Path = s[1]
 			req.Version = s[2]
 
-			if len(s) < 3 {
-				return nil, fmt.Errorf("malformed request line")
-			}
 		} else {
 			s := strings.SplitN(strings.ToLower(sMessage), ":", 2)
 			if len(s) == 2 {
@@ -138,29 +139,18 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 	return &req, nil
 }
 
-func formatResponse(r Response) (string, error) {
-
+func formatResponse(r Response) string {
 	var sb strings.Builder
-
 	sb.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Version, r.ResCode, r.Reason))
 	for k, v := range r.Headers {
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
 	sb.WriteString("\r\n")
-	_, err := sb.WriteString(r.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to write body: %w", err)
-	}
-
-	return sb.String(), nil
+	sb.WriteString(r.Body)
+	return sb.String()
 }
 
-func serveFile(filename string, statusCode string) (Response, error) {
-	body, err := os.ReadFile(filename)
-	if err != nil {
-		return Response{}, fmt.Errorf("failed to read file %w", err)
-	}
-
+func buildResponse(body string, statusCode string) Response {
 	reason, ok := statusReasons[statusCode]
 	if !ok {
 		reason = "UNKNOWN"
@@ -178,8 +168,21 @@ func serveFile(filename string, statusCode string) (Response, error) {
 		Body: string(body),
 	}
 
-	return resp, nil
+	return resp
+}
 
+func serveFile(filename string, statusCode string) Response {
+
+	var resp Response
+
+	body, err := os.ReadFile(filename)
+	if err != nil {
+		resp = buildResponse("Internal Server Error", "500")
+		return resp
+	}
+	resp = buildResponse(string(body), statusCode)
+
+	return resp
 }
 
 func handleTCPConnections(c net.Conn) {
@@ -190,46 +193,38 @@ func handleTCPConnections(c net.Conn) {
 
 	req, err := parseRequest(r)
 	if err != nil {
-		resp := Response{
-			Version: VERSION,
-			ResCode: "400",
-			Reason:  "Bad Request",
-			Headers: map[string]string{
-				"Date":           time.Now().Format(http.TimeFormat),
-				"Content-Length": strconv.Itoa(len(err.Error())),
-			},
-			Body: err.Error(),
-		}
+		body := "Bad Request"
+		resp := buildResponse(body, "400")
 
-		formattedResp, _ := formatResponse(resp)
+		formattedResp := formatResponse(resp)
 		c.Write([]byte(formattedResp))
 		return
 	}
 
 	var routes = map[string]requestHandler{
 		"/": func(req Request) Response {
-			resp, _ := serveFile("index.html", "200")
+			resp := serveFile("index.html", "200")
 			return resp
 		},
 		"/abcd": func(req Request) Response {
-			resp, _ := serveFile("abcd.html", "200")
+			resp := serveFile("abcd.html", "200")
 			return resp
 		},
 		"/418": func(req Request) Response {
-			resp, _ := serveFile("teapot.html", "418")
+			resp := serveFile("teapot.html", "418")
 			return resp
 		},
 	}
 
 	if handler, exists := routes[req.Path]; exists {
 		resp := handler(*req)
-		res, _ := formatResponse(resp)
+		res := formatResponse(resp)
 
 		c.Write([]byte(res))
 		return
 	} else {
-		resp, _ := serveFile("not-found.html", "404")
-		res, _ := formatResponse(resp)
+		resp := serveFile("not-found.html", "404")
+		res := formatResponse(resp)
 
 		c.Write([]byte(res))
 		return
