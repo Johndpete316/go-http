@@ -23,6 +23,7 @@ import (
 
 // more info @ https://www.jmarshall.com/easy/http/
 
+// TODO: config file so I can bring back my dream of the teapot page returning 418
 // should be configurable by config file eventually
 const PORT string = ":80"
 const VERSION string = "HTTP/1.0"
@@ -41,7 +42,7 @@ type Response struct {
 	ResCode string
 	Reason  string
 	Headers map[string]string
-	Body    string
+	Body    []byte
 }
 
 var statusReasons = map[string]string{
@@ -49,11 +50,27 @@ var statusReasons = map[string]string{
 	"404": "Not Found",
 	"400": "Bad Request",
 	"401": "Unauthorized",
+	"403": "Forbidden",
 	"500": "Internal Server Error",
 	"418": "I'm a teapot",
 }
 
-// type requestHandler func(Request) Response
+var MIMETYPES = map[string]string{
+	".bin":  "application/octet-stream",
+	".html": "text/html",
+	".htm":  "text/html",
+	".css":  "text/css",
+	".js":   "text/javascript",
+	".json": "application/json",
+	".php":  "application/x-httpd-php",
+	".md":   "text/markdown",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".gif":  "image/gif",
+	".txt":  "text/plain",
+	".webp": "image/webp",
+}
 
 func main() {
 	fmt.Printf("Listening on port %s\n", PORT)
@@ -75,31 +92,28 @@ func main() {
 }
 
 func sanitizePath(userPath string, documentRoot string) (string, error) {
-
-	// TODO: Re-arange this file so that path traversal attempts can be detected and rejected
-	// prior to the filepath.Clean function is ran, scumbags need a 403 xD
-
+	if strings.Contains(userPath, "..") {
+		return "", fmt.Errorf("path traversal attempt detected")
+	}
 	var safePath string
-
 	cleanedPath := filepath.Clean(userPath)
 	joinedPath := filepath.Join(documentRoot, cleanedPath)
-
 	absPath, err := filepath.Abs(joinedPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path: %w", err)
 	}
 	absDocumentRoot, err := filepath.Abs(documentRoot)
 	if err != nil {
-		return "", fmt.Errorf("failed to get absolute path: %w", err)
+		return "", fmt.Errorf("failed to get document root absolute path %w", err)
 	}
 	if strings.HasPrefix(absPath, absDocumentRoot) {
-		// TODO: validate next char after prefix is a path seperator
-		safePath = absPath
-	} else {
-		return "", fmt.Errorf("path traversal attempt")
+		// TODO: re-address this
+		if absPath == absDocumentRoot || absPath[len(absDocumentRoot)] == filepath.Separator {
+			safePath = absPath
+		} else {
+			return "", fmt.Errorf("invalid path")
+		}
 	}
-	fmt.Printf("absolute path: %s\n", absPath)
-
 	return safePath, nil
 }
 
@@ -164,7 +178,7 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 	return &req, nil
 }
 
-func formatResponse(r Response) string {
+func formatResponse(r Response) []byte {
 
 	var sb strings.Builder
 
@@ -173,12 +187,13 @@ func formatResponse(r Response) string {
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
 	sb.WriteString("\r\n")
-	sb.WriteString(r.Body)
 
-	return sb.String()
+	bRes := append([]byte(sb.String()), r.Body...)
+
+	return bRes
 }
 
-func buildResponse(body string, statusCode string) Response {
+func buildResponse(mimeType string, body []byte, statusCode string) Response {
 	reason, ok := statusReasons[statusCode]
 	if !ok {
 		reason = "UNKNOWN"
@@ -188,33 +203,74 @@ func buildResponse(body string, statusCode string) Response {
 		ResCode: statusCode,
 		Reason:  reason,
 		Headers: map[string]string{
-			"Content-Type":   "text/html",
 			"Content-Length": strconv.Itoa(len(body)),
 			"Date":           time.Now().Format(http.TimeFormat),
 		},
-		Body: string(body),
+		Body: body,
 	}
-	return resp
+	if mimeType == "" {
+		resp.Headers["Content-Type"] = "application/octet-stream"
+		return resp
+	} else {
+		resp.Headers["Content-Type"] = mimeType
+		return resp
+	}
 }
 
-func serveFile(filename string, statusCode string) Response {
+func getMimeType(filePath string) string {
+	fileExt := filepath.Ext(filePath)
+	mimeType, ok := MIMETYPES[fileExt]
+	if !ok {
+		return ""
+	}
+	return mimeType
+}
+
+func serveFile(filePath string, statusCode string) (Response, error) {
 
 	var resp Response
 
-	body, err := os.ReadFile(filename)
-	if err != nil {
-		resp = buildResponse("Internal Server Error", "500")
-		return resp
-	}
-	resp = buildResponse(string(body), statusCode)
+	mimeType := getMimeType(filePath)
 
-	return resp
+	body, err := os.ReadFile(filePath)
+	if err != nil {
+		// pass path string to build response
+		return Response{}, fmt.Errorf("failed to read file %w", err)
+	}
+	resp = buildResponse(mimeType, body, statusCode)
+
+	return resp, nil
+}
+
+func fileExists(filePath string) bool {
+	_, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		return false
+	} else {
+		return true
+	}
+}
+
+func serveNotFound() []byte {
+	notFoundHtml := filepath.Join(DOCUMENTROOT, "not-found.html")
+	if fileExists(notFoundHtml) {
+		var resp Response
+		resp, err := serveFile(notFoundHtml, "404")
+		if err != nil {
+			// TODO: error logging
+			resp = buildResponse("text/plain", []byte("Internal Server Error"), "500")
+		}
+		res := formatResponse(resp)
+		return res
+	} else {
+		resp := buildResponse("text/plain", []byte("Not Found"), "404")
+		res := formatResponse(resp)
+		return res
+	}
 }
 
 func handleTCPConnections(c net.Conn) {
 	defer c.Close()
-
-	var isDir bool
 
 	// request
 	fmt.Printf("Connection started from %s\n", c.RemoteAddr().String())
@@ -222,73 +278,52 @@ func handleTCPConnections(c net.Conn) {
 
 	req, err := parseRequest(r)
 	if err != nil {
-		body := "Bad Request"
-		resp := buildResponse(body, "400")
-
-		formattedResp := formatResponse(resp)
-		c.Write([]byte(formattedResp))
+		body := []byte("Bad Request")
+		resp := buildResponse("text/plain", body, "400")
+		res := formatResponse(resp)
+		c.Write(res)
 		return
 	}
 
-	// TODO: MIME Type detection, adjust Content-Type header based off this.
-	// TODO: handle file not found  (404)
-	// TODO: handle DIR not found  (404)
-	// TODO: run through full test suite --
-	// GET / → should serve index.html
-	// GET /about.html → should serve about.html
-	// GET /images/cat.jpg → should serve the image with correct Content-Type
-	// GET /../../../etc/passwd → should return 403
-	// GET /nonexistent.html → should return 404
-	// TODO: Remove routes map comment block
-	// TODO: config file so I can bring back my dream of the teapot page returning 418
-
-	sanitizedPath, _ := sanitizePath(req.Path, DOCUMENTROOT)
-	fmt.Println(sanitizedPath)
+	sanitizedPath, err := sanitizePath(req.Path, DOCUMENTROOT)
+	if err != nil {
+		// TOMFOOLERY
+		body := []byte("Forbidden")
+		resp := buildResponse("text/plain", body, "403")
+		res := formatResponse(resp)
+		c.Write(res)
+		return
+	}
 	fileStats, err := os.Stat(sanitizedPath)
 	if err != nil {
-		isDir = false
-	} else {
-		isDir = fileStats.IsDir()
-	}
-	if isDir {
-		resp := serveFile(sanitizedPath+"/index.html", "200")
-		res := formatResponse(resp)
-		c.Write([]byte(res))
-		return
-	} else {
-		resp := serveFile(sanitizedPath+".html", "200")
-		res := formatResponse(resp)
-		c.Write([]byte(res))
+		res := serveNotFound()
+		c.Write(res)
 		return
 	}
-
-	/* 	var routes = map[string]requestHandler{
-	   		"/": func(req Request) Response {
-	   			resp := serveFile("index.html", "200")
-	   			return resp
-	   		},
-	   		"/abcd": func(req Request) Response {
-	   			resp := serveFile("abcd.html", "200")
-	   			return resp
-	   		},
-	   		"/418": func(req Request) Response {
-	   			resp := serveFile("teapot.html", "418")
-	   			return resp
-	   		},
-	   	}
-
-	   	if handler, exists := routes[req.Path]; exists {
-	   		resp := handler(*req)
-	   		res := formatResponse(resp)
-
-	   		c.Write([]byte(res))
-	   		return
-	   	} else {
-	   		resp := serveFile("not-found.html", "404")
-	   		res := formatResponse(resp)
-
-	   		c.Write([]byte(res))
-	   		return
-	   	} */
-
+	if fileStats.IsDir() {
+		indexHtmlPath := filepath.Join(sanitizedPath, "index.html")
+		var resp Response
+		if !fileExists(indexHtmlPath) {
+			res := serveNotFound()
+			c.Write(res)
+			return
+		}
+		resp, err = serveFile(indexHtmlPath, "200")
+		if err != nil {
+			resp = buildResponse("text/plain", []byte("Internal Server Error"), "500")
+		}
+		res := formatResponse(resp)
+		c.Write(res)
+		return
+	} else {
+		// TODO: impliment extensionless routes for html and PHP
+		var resp Response
+		resp, err = serveFile(sanitizedPath, "200")
+		if err != nil {
+			resp = buildResponse("text/plain", []byte("Internal Server Error"), "500")
+		}
+		res := formatResponse(resp)
+		c.Write(res)
+		return
+	}
 }
