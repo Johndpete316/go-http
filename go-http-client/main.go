@@ -19,24 +19,26 @@ const (
 )
 
 func main() {
-	uriPtr := flag.String("URI", "http://localhost", "Enter the target URI")
+	targetPtr := flag.String("target", "localhost:80", "Enter the target ip/hostname and port")
+	targetSchemaPtr := flag.String("schema", "http", "Enter the schema to use against the target (http default)")
 	testPtr := flag.String("test", "basic-get", "select which test to run")
 	timeoutPtr := flag.Int64("timeout", 10, "Use with 'timout' test to delay writing data after request")
 	flag.Parse()
 
-	fmt.Printf("Selected Test: %s against %s\n", *testPtr, *uriPtr)
+	fmt.Printf("Selected Test: %s against %s\n", *testPtr, *targetPtr)
+	targetURI := fmt.Sprintf("%s://%s", *targetSchemaPtr, *targetPtr)
 	switch *testPtr {
 	case "basic-get":
-		httpGETRequest(*uriPtr)
+		httpGETRequest(targetURI)
 
 	case "basic-head":
-		httpHEADRequest(*uriPtr)
+		httpHEADRequest(targetURI)
 
 	case "basic-put":
-		httpPUTRequest(*uriPtr)
+		httpPUTRequest(targetURI)
 
 	case "timeout":
-		httpTimeoutTest(*uriPtr, time.Duration(*timeoutPtr))
+		httpTimeoutTest(*targetPtr, time.Duration(*timeoutPtr))
 
 	}
 }
