@@ -1,36 +1,43 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"time"
 )
 
-const USERAGENT string = "MyGoClient/1.0"
+const (
+	USERAGENT string = "MyGoClient/1.0"
+	PORT      string = "80"
+)
 
 func main() {
 	uriPtr := flag.String("URI", "http://localhost", "Enter the target URI")
 	testPtr := flag.String("test", "basic-get", "select which test to run")
+	timeoutPtr := flag.Int64("timeout", 10, "Use with 'timout' test to delay writing data after request")
 	flag.Parse()
 
+	fmt.Printf("Selected Test: %s against %s\n", *testPtr, *uriPtr)
 	switch *testPtr {
 	case "basic-get":
-
-		fmt.Printf("Selected Test: %s against %s\n", *testPtr, *uriPtr)
 		httpGETRequest(*uriPtr)
 
 	case "basic-head":
-		fmt.Printf("Selected Test: %s against %s\n", *testPtr, *uriPtr)
 		httpHEADRequest(*uriPtr)
 
 	case "basic-put":
-		fmt.Printf("Selected Test: %s against %s\n", *testPtr, *uriPtr)
 		httpPUTRequest(*uriPtr)
+
+	case "timeout":
+		httpTimeoutTest(*uriPtr, time.Duration(*timeoutPtr))
+
 	}
 }
 
@@ -141,4 +148,23 @@ func httpPUTRequest(TargetURI string) {
 	fmt.Printf("Response: %v\n", resp.StatusCode)
 	fmt.Printf("Headers: %v\n", resp.Header)
 	fmt.Printf("Body: \n%s", string(body))
+}
+
+func httpTimeoutTest(TargetURI string, waitTime time.Duration) {
+	conn, err := net.Dial("tcp", TargetURI)
+	if err != nil {
+		log.Fatalf("error opening TCP connection: %v", err)
+		return
+	}
+	time.Sleep(waitTime * time.Second)
+	conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
+	r := bufio.NewReader(conn)
+
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			log.Fatalf("error reading line %v\n", err)
+		}
+		fmt.Printf("%s", line)
+	}
 }

@@ -26,9 +26,11 @@ import (
 
 // TODO: config file so I can bring back my dream of the teapot page returning 418
 // should be configurable by config file eventually
-const PORT string = ":80"
-const VERSION string = "HTTP/1.0"
-const DOCUMENTROOT string = "./public"
+const (
+	PORT         string = ":80"
+	VERSION      string = "HTTP/1.0"
+	DOCUMENTROOT string = "./public"
+)
 
 var SupportedMethods = []string{"GET", "HEAD", "POST"}
 
@@ -92,7 +94,6 @@ func main() {
 		}
 		go handleTCPConnections(c)
 	}
-
 }
 
 func sanitizePath(userPath string, documentRoot string) (string, error) {
@@ -122,7 +123,6 @@ func sanitizePath(userPath string, documentRoot string) (string, error) {
 }
 
 func parseRequest(r *bufio.Reader) (*Request, error) {
-
 	req := Request{
 		Headers: make(map[string]string),
 		Body:    "",
@@ -183,7 +183,6 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 }
 
 func formatResponse(r Response) []byte {
-
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Version, r.ResCode, r.Reason))
@@ -198,7 +197,6 @@ func formatResponse(r Response) []byte {
 }
 
 func buildResponse(mimeType string, body []byte, statusCode string, method string, additionalHeaders map[string]string) Response {
-
 	reason, ok := statusReasons[statusCode]
 	if !ok {
 		reason = "UNKNOWN"
@@ -245,7 +243,6 @@ func getMimeType(filePath string) string {
 }
 
 func readFile(filePath string) ([]byte, string, error) {
-
 	mimeType := getMimeType(filePath)
 
 	body, err := os.ReadFile(filePath)
@@ -325,6 +322,7 @@ func handleRequest(req *Request) []byte {
 }
 
 func handleTCPConnections(c net.Conn) {
+	c.SetDeadline(time.Now().Add(10 * time.Second))
 	defer c.Close()
 
 	// request
