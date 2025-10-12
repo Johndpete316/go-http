@@ -193,10 +193,16 @@ func formatResponse(r Response) []byte {
 	return bRes
 }
 
-func buildResponse(mimeType string, body []byte, statusCode string) Response {
+func buildResponse(mimeType string, body []byte, statusCode string, method string) Response {
 	reason, ok := statusReasons[statusCode]
 	if !ok {
 		reason = "UNKNOWN"
+	}
+	var responseBody []byte
+	if method == "HEAD" {
+		responseBody = []byte("")
+	} else {
+		responseBody = body
 	}
 	resp := Response{
 		Version: VERSION,
@@ -206,7 +212,7 @@ func buildResponse(mimeType string, body []byte, statusCode string) Response {
 			"Content-Length": strconv.Itoa(len(body)),
 			"Date":           time.Now().Format(http.TimeFormat),
 		},
-		Body: body,
+		Body: responseBody,
 	}
 	if mimeType == "" {
 		resp.Headers["Content-Type"] = "application/octet-stream"
@@ -226,20 +232,17 @@ func getMimeType(filePath string) string {
 	return mimeType
 }
 
-func serveFile(filePath string, statusCode string) (Response, error) {
-
-	var resp Response
+func readFile(filePath string) ([]byte, string, error) {
 
 	mimeType := getMimeType(filePath)
 
 	body, err := os.ReadFile(filePath)
 	if err != nil {
 		// pass path string to build response
-		return Response{}, fmt.Errorf("failed to read file %w", err)
+		return nil, "", fmt.Errorf("failed to read file %w", err)
 	}
-	resp = buildResponse(mimeType, body, statusCode)
 
-	return resp, nil
+	return body, mimeType, nil
 }
 
 func fileExists(filePath string) bool {
@@ -251,20 +254,58 @@ func fileExists(filePath string) bool {
 	}
 }
 
-func serveNotFound() []byte {
+func serveNotFound(req *Request) []byte {
 	notFoundHtml := filepath.Join(DOCUMENTROOT, "not-found.html")
 	if fileExists(notFoundHtml) {
-		var resp Response
-		resp, err := serveFile(notFoundHtml, "404")
+		body, mimeType, err := readFile(notFoundHtml)
 		if err != nil {
 			// TODO: error logging
-			resp = buildResponse("text/plain", []byte("Internal Server Error"), "500")
+			resp := buildResponse("text/plain", []byte("Internal Server Error"), "500", req.Method)
+			res := formatResponse(resp)
+			return res
 		}
+		resp := buildResponse(mimeType, body, "404", req.Method)
 		res := formatResponse(resp)
 		return res
 	} else {
-		resp := buildResponse("text/plain", []byte("Not Found"), "404")
+		resp := buildResponse("text/plain", []byte("Not Found"), "404", req.Method)
 		res := formatResponse(resp)
+		return res
+	}
+}
+
+func serveFound(req *Request, path string) []byte {
+	body, mimeType, err := readFile(path)
+	if err != nil {
+		res := serveNotFound(req)
+		return res
+	}
+	resp := buildResponse(mimeType, body, "200", req.Method)
+	res := formatResponse(resp)
+	return res
+}
+
+func handleRequest(req *Request) []byte {
+	sanitizedPath, err := sanitizePath(req.Path, DOCUMENTROOT)
+	if err != nil {
+		// TOMFOOLERY
+		body := []byte("Forbidden")
+		resp := buildResponse("text/plain", body, "403", req.Method)
+		res := formatResponse(resp)
+		return res
+	}
+	fileStats, err := os.Stat(sanitizedPath)
+	if err != nil {
+		res := serveNotFound(req)
+		return res
+	}
+	if fileStats.IsDir() {
+		indexHtmlPath := filepath.Join(sanitizedPath, "index.html")
+		res := serveFound(req, indexHtmlPath)
+		return res
+	} else {
+		// TODO: impliment extensionless routes for html and PHP
+		res := serveFound(req, sanitizedPath)
 		return res
 	}
 }
@@ -279,51 +320,12 @@ func handleTCPConnections(c net.Conn) {
 	req, err := parseRequest(r)
 	if err != nil {
 		body := []byte("Bad Request")
-		resp := buildResponse("text/plain", body, "400")
+		resp := buildResponse("text/plain", body, "400", req.Method)
 		res := formatResponse(resp)
 		c.Write(res)
 		return
 	}
 
-	sanitizedPath, err := sanitizePath(req.Path, DOCUMENTROOT)
-	if err != nil {
-		// TOMFOOLERY
-		body := []byte("Forbidden")
-		resp := buildResponse("text/plain", body, "403")
-		res := formatResponse(resp)
-		c.Write(res)
-		return
-	}
-	fileStats, err := os.Stat(sanitizedPath)
-	if err != nil {
-		res := serveNotFound()
-		c.Write(res)
-		return
-	}
-	if fileStats.IsDir() {
-		indexHtmlPath := filepath.Join(sanitizedPath, "index.html")
-		var resp Response
-		if !fileExists(indexHtmlPath) {
-			res := serveNotFound()
-			c.Write(res)
-			return
-		}
-		resp, err = serveFile(indexHtmlPath, "200")
-		if err != nil {
-			resp = buildResponse("text/plain", []byte("Internal Server Error"), "500")
-		}
-		res := formatResponse(resp)
-		c.Write(res)
-		return
-	} else {
-		// TODO: impliment extensionless routes for html and PHP
-		var resp Response
-		resp, err = serveFile(sanitizedPath, "200")
-		if err != nil {
-			resp = buildResponse("text/plain", []byte("Internal Server Error"), "500")
-		}
-		res := formatResponse(resp)
-		c.Write(res)
-		return
-	}
+	res := handleRequest(req)
+	c.Write(res)
 }
