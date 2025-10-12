@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -112,7 +113,6 @@ func sanitizePath(userPath string, documentRoot string) (string, error) {
 		return "", fmt.Errorf("failed to get document root absolute path %w", err)
 	}
 	if strings.HasPrefix(absPath, absDocumentRoot) {
-		// TODO: re-address this
 		if absPath == absDocumentRoot || absPath[len(absDocumentRoot)] == filepath.Separator {
 			safePath = absPath
 		} else {
@@ -325,12 +325,18 @@ func handleTCPConnections(c net.Conn) {
 	c.SetDeadline(time.Now().Add(10 * time.Second))
 	defer c.Close()
 
+	var netErr net.Error
+
 	// request
 	fmt.Printf("Connection started from %s\n", c.RemoteAddr().String())
 	r := bufio.NewReader(c)
 
 	req, err := parseRequest(r)
 	if err != nil {
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			fmt.Printf("Connection timed out from %s\n", c.RemoteAddr().String())
+			return
+		}
 		body := []byte("Bad Request")
 		resp := buildResponse("text/plain", body, "400", "HEAD", nil)
 		res := formatResponse(resp)
@@ -339,7 +345,6 @@ func handleTCPConnections(c net.Conn) {
 	}
 
 	if !slices.Contains(SupportedMethods, req.Method) {
-
 		allowedMethodsString := strings.Join(SupportedMethods, ", ")
 		allowedMethodsHeader := map[string]string{
 			"Allow": allowedMethodsString,
@@ -353,5 +358,9 @@ func handleTCPConnections(c net.Conn) {
 	}
 
 	res := handleRequest(req)
-	c.Write(res)
+	_, err = c.Write(res)
+	if err != nil && errors.As(err, &netErr) && netErr.Timeout() {
+		fmt.Printf("Connection timed out from %s\n", c.RemoteAddr().String())
+		return
+	}
 }
