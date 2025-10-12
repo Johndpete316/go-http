@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,8 @@ import (
 const PORT string = ":80"
 const VERSION string = "HTTP/1.0"
 const DOCUMENTROOT string = "./public"
+
+var SupportedMethods = []string{"GET", "HEAD", "POST"}
 
 type Request struct {
 	Method  string
@@ -51,11 +54,12 @@ var statusReasons = map[string]string{
 	"400": "Bad Request",
 	"401": "Unauthorized",
 	"403": "Forbidden",
+	"405": "Method Not Allowed",
 	"500": "Internal Server Error",
 	"418": "I'm a teapot",
 }
 
-var MIMETYPES = map[string]string{
+var MimeTypes = map[string]string{
 	".bin":  "application/octet-stream",
 	".html": "text/html",
 	".htm":  "text/html",
@@ -193,17 +197,20 @@ func formatResponse(r Response) []byte {
 	return bRes
 }
 
-func buildResponse(mimeType string, body []byte, statusCode string, method string) Response {
+func buildResponse(mimeType string, body []byte, statusCode string, method string, additionalHeaders map[string]string) Response {
+
 	reason, ok := statusReasons[statusCode]
 	if !ok {
 		reason = "UNKNOWN"
 	}
+
 	var responseBody []byte
 	if method == "HEAD" {
 		responseBody = []byte("")
 	} else {
 		responseBody = body
 	}
+
 	resp := Response{
 		Version: VERSION,
 		ResCode: statusCode,
@@ -214,6 +221,11 @@ func buildResponse(mimeType string, body []byte, statusCode string, method strin
 		},
 		Body: responseBody,
 	}
+
+	for key, value := range additionalHeaders {
+		resp.Headers[key] = value
+	}
+
 	if mimeType == "" {
 		resp.Headers["Content-Type"] = "application/octet-stream"
 		return resp
@@ -225,7 +237,7 @@ func buildResponse(mimeType string, body []byte, statusCode string, method strin
 
 func getMimeType(filePath string) string {
 	fileExt := filepath.Ext(filePath)
-	mimeType, ok := MIMETYPES[fileExt]
+	mimeType, ok := MimeTypes[fileExt]
 	if !ok {
 		return ""
 	}
@@ -260,15 +272,15 @@ func serveNotFound(req *Request) []byte {
 		body, mimeType, err := readFile(notFoundHtml)
 		if err != nil {
 			// TODO: error logging
-			resp := buildResponse("text/plain", []byte("Internal Server Error"), "500", req.Method)
+			resp := buildResponse("text/plain", []byte("Internal Server Error"), "500", req.Method, nil)
 			res := formatResponse(resp)
 			return res
 		}
-		resp := buildResponse(mimeType, body, "404", req.Method)
+		resp := buildResponse(mimeType, body, "404", req.Method, nil)
 		res := formatResponse(resp)
 		return res
 	} else {
-		resp := buildResponse("text/plain", []byte("Not Found"), "404", req.Method)
+		resp := buildResponse("text/plain", []byte("Not Found"), "404", req.Method, nil)
 		res := formatResponse(resp)
 		return res
 	}
@@ -280,7 +292,7 @@ func serveFound(req *Request, path string) []byte {
 		res := serveNotFound(req)
 		return res
 	}
-	resp := buildResponse(mimeType, body, "200", req.Method)
+	resp := buildResponse(mimeType, body, "200", req.Method, nil)
 	res := formatResponse(resp)
 	return res
 }
@@ -290,12 +302,14 @@ func handleRequest(req *Request) []byte {
 	if err != nil {
 		// TOMFOOLERY
 		body := []byte("Forbidden")
-		resp := buildResponse("text/plain", body, "403", req.Method)
+		resp := buildResponse("text/plain", body, "403", req.Method, nil)
 		res := formatResponse(resp)
 		return res
 	}
 	fileStats, err := os.Stat(sanitizedPath)
 	if err != nil {
+		// TODO: Determine if the error is becuase the file doesn't exist
+		// or due to lack of permissions, or other reasons and response accordingly.
 		res := serveNotFound(req)
 		return res
 	}
@@ -320,7 +334,21 @@ func handleTCPConnections(c net.Conn) {
 	req, err := parseRequest(r)
 	if err != nil {
 		body := []byte("Bad Request")
-		resp := buildResponse("text/plain", body, "400", req.Method)
+		resp := buildResponse("text/plain", body, "400", "HEAD", nil)
+		res := formatResponse(resp)
+		c.Write(res)
+		return
+	}
+
+	if !slices.Contains(SupportedMethods, req.Method) {
+
+		allowedMethodsString := strings.Join(SupportedMethods, ", ")
+		allowedMethodsHeader := map[string]string{
+			"Allow": allowedMethodsString,
+		}
+
+		body := []byte("Method Not Allowed")
+		resp := buildResponse("text/plain", body, "405", req.Method, allowedMethodsHeader)
 		res := formatResponse(resp)
 		c.Write(res)
 		return
