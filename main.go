@@ -136,13 +136,13 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 		}
 		if message == "\r\n" {
 			// read body
-			sbodyLen, ok := req.Headers["Content-Length"]
-			if !ok && req.Method != "POST" {
-				break // Content-Length header missing, break
-			} else if req.Method == "POST" {
+			sbodyLen, ok := req.Headers["content-length"]
+			if !ok && req.Method == "POST" {
 				return nil, fmt.Errorf("POST missing Content-Length")
+			} else if !ok {
+				break
 			}
-			bodyLen, err := strconv.ParseInt(sbodyLen, 10, 32)
+			bodyLen, err := strconv.ParseInt(sbodyLen, 10, 64)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse body length: %w", err)
 			} else if bodyLen <= 0 {
@@ -166,7 +166,7 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 			req.Method = s[0]
 			req.Path = s[1]
 			req.Version = s[2]
-
+			i++
 		} else {
 			s := strings.SplitN(strings.ToLower(sMessage), ":", 2)
 			if len(s) == 2 {
@@ -176,9 +176,7 @@ func parseRequest(r *bufio.Reader) (*Request, error) {
 				return nil, fmt.Errorf("malformed headers")
 			}
 		}
-		i++
 	}
-
 	return &req, nil
 }
 
@@ -201,14 +199,12 @@ func buildResponse(mimeType string, body []byte, statusCode string, method strin
 	if !ok {
 		reason = "UNKNOWN"
 	}
-
 	var responseBody []byte
 	if method == "HEAD" {
 		responseBody = []byte("")
 	} else {
 		responseBody = body
 	}
-
 	resp := Response{
 		Version: VERSION,
 		ResCode: statusCode,
@@ -219,11 +215,9 @@ func buildResponse(mimeType string, body []byte, statusCode string, method strin
 		},
 		Body: responseBody,
 	}
-
 	for key, value := range additionalHeaders {
 		resp.Headers[key] = value
 	}
-
 	if mimeType == "" {
 		resp.Headers["Content-Type"] = "application/octet-stream"
 		return resp
@@ -244,13 +238,11 @@ func getMimeType(filePath string) string {
 
 func readFile(filePath string) ([]byte, string, error) {
 	mimeType := getMimeType(filePath)
-
 	body, err := os.ReadFile(filePath)
 	if err != nil {
 		// pass path string to build response
 		return nil, "", fmt.Errorf("failed to read file %w", err)
 	}
-
 	return body, mimeType, nil
 }
 
@@ -295,30 +287,58 @@ func serveFound(req *Request, path string) []byte {
 }
 
 func handleRequest(req *Request) []byte {
-	sanitizedPath, err := sanitizePath(req.Path, DOCUMENTROOT)
-	if err != nil {
-		// TOMFOOLERY
-		body := []byte("Forbidden")
-		resp := buildResponse("text/plain", body, "403", req.Method, nil)
+
+	switch {
+	case req.Method == "GET", req.Method == "HEAD":
+		sanitizedPath, err := sanitizePath(req.Path, DOCUMENTROOT)
+		if err != nil {
+			// TOMFOOLERY
+			body := []byte("Forbidden")
+			resp := buildResponse("text/plain", body, "403", req.Method, nil)
+			res := formatResponse(resp)
+			return res
+		}
+		fileStats, err := os.Stat(sanitizedPath)
+		if err != nil {
+			// TODO: Determine if the error is becuase the file doesn't exist
+			// or due to lack of permissions, or other reasons and response accordingly.
+			res := serveNotFound(req)
+			return res
+		}
+		if fileStats.IsDir() {
+			indexHtmlPath := filepath.Join(sanitizedPath, "index.html")
+			res := serveFound(req, indexHtmlPath)
+			return res
+		} else {
+			// TODO: impliment extensionless routes for html and PHP
+			res := serveFound(req, sanitizedPath)
+			return res
+		}
+
+	case req.Method == "POST":
+		file, err := os.OpenFile("post.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) // not worried about errors this is for testing
+		if err != nil {
+			fmt.Printf("error opening file : %v", err)
+			resp := buildResponse("text/plain", []byte("Internal Server Error"), "500", req.Method, nil)
+			res := formatResponse(resp)
+			return res
+		}
+		defer file.Close()
+
+		n, err := file.WriteString(req.Body)
+		if err != nil {
+			fmt.Printf("error writing string: %v", err)
+			resp := buildResponse("text/plain", []byte("Internal Server Error"), "500", req.Method, nil)
+			res := formatResponse(resp)
+			return res
+		}
+		body := fmt.Sprintf("%v bytes of %s written to log file.", n, req.Headers["content-length"])
+		resp := buildResponse("text/plain", []byte(body), "201", req.Method, nil)
 		res := formatResponse(resp)
 		return res
+
 	}
-	fileStats, err := os.Stat(sanitizedPath)
-	if err != nil {
-		// TODO: Determine if the error is becuase the file doesn't exist
-		// or due to lack of permissions, or other reasons and response accordingly.
-		res := serveNotFound(req)
-		return res
-	}
-	if fileStats.IsDir() {
-		indexHtmlPath := filepath.Join(sanitizedPath, "index.html")
-		res := serveFound(req, indexHtmlPath)
-		return res
-	} else {
-		// TODO: impliment extensionless routes for html and PHP
-		res := serveFound(req, sanitizedPath)
-		return res
-	}
+	return nil
 }
 
 func handleTCPConnections(c net.Conn) {
@@ -337,8 +357,9 @@ func handleTCPConnections(c net.Conn) {
 			fmt.Printf("Connection timed out from %s\n", c.RemoteAddr().String())
 			return
 		}
+		fmt.Printf("Error parsing request: %v", err)
 		body := []byte("Bad Request")
-		resp := buildResponse("text/plain", body, "400", "HEAD", nil)
+		resp := buildResponse("text/plain", body, "400", "GET", nil)
 		res := formatResponse(resp)
 		c.Write(res)
 		return

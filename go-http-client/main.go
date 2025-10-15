@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -21,25 +22,27 @@ const (
 func main() {
 	targetPtr := flag.String("target", "localhost:80", "Enter the target ip/hostname and port")
 	targetSchemaPtr := flag.String("schema", "http", "Enter the schema to use against the target (http default)")
-	testPtr := flag.String("test", "basic-get", "select which test to run")
+	testPtr := flag.String("test", "get", "select which test to run")
 	timeoutPtr := flag.Int64("timeout", 10, "Use with 'timout' test to delay writing data after request")
 	flag.Parse()
 
 	fmt.Printf("Selected Test: %s against %s\n", *testPtr, *targetPtr)
 	targetURI := fmt.Sprintf("%s://%s", *targetSchemaPtr, *targetPtr)
-	switch *testPtr {
-	case "basic-get":
+	switch strings.ToLower(*testPtr) {
+	case "get":
 		httpGETRequest(targetURI)
 
-	case "basic-head":
+	case "head":
 		httpHEADRequest(targetURI)
 
-	case "basic-put":
+	case "put":
 		httpPUTRequest(targetURI)
 
 	case "timeout":
 		httpTimeoutTest(*targetPtr, time.Duration(*timeoutPtr))
 
+	case "post":
+		httpPOSTTest(targetURI)
 	}
 }
 
@@ -169,4 +172,39 @@ func httpTimeoutTest(TargetURI string, waitTime time.Duration) {
 		}
 		fmt.Printf("%s", line)
 	}
+}
+
+func httpPOSTTest(TargetURI string) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	payload := map[string]any{
+		"id":   1,
+		"test": "data",
+		"date": time.Now().Format(http.TimeFormat),
+	}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		log.Fatalf("Error marshalling JSON: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, TargetURI, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		log.Fatalf("Error reading body: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatalf("Error making HTTP request: %w", err)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("Error reading body: %w", err)
+	}
+	fmt.Printf("Response: %v\n", resp.StatusCode)
+	fmt.Printf("Headers: %v\n", resp.Header)
+	fmt.Printf("Body: \n%s", string(body))
 }
